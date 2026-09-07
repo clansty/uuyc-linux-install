@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ ${1:-} == --help ]]; then
+    printf 'usage: start-xembed-proxy\nRun from the graphical login session; starts the configured xembedsniproxy.service.\n'
+    exit 0
+fi
+[[ $# == 0 ]] || exit 2
+: "${DISPLAY:?Run from the graphical login session}"
+: "${XDG_RUNTIME_DIR:?Missing user runtime directory}"
+probe="${UU_XEMBED_PROBE:-$HOME/.local/libexec/uuyc/xembed-owner}"
+[[ -x "$probe" ]] || { printf 'Missing %s\n' "$probe" >&2; exit 1; }
+exec 9>"$XDG_RUNTIME_DIR/uuyc-xembed.lock"
+flock -w 65 9
+ready=false
+for _ in {1..60}; do
+    status=0
+    "$probe" >/dev/null 2>&1 || status=$?
+    [[ $status == 0 ]] && exit 0
+    if [[ $status == 1 ]]; then
+        ready=true
+        break
+    fi
+    sleep 1
+done
+[[ $ready == true ]] || { printf 'X11 was not ready within 60 seconds\n' >&2; exit 1; }
+umask 077
+session_env="$(mktemp "$XDG_RUNTIME_DIR/uuyc-xembed.env.XXXXXX")"
+trap 'rm -f -- "$session_env"' EXIT
+perl -e '
+    for my $key (qw(DISPLAY XAUTHORITY)) {
+        my $value = $ENV{$key} // "";
+        $value !~ /[\r\n\0]/ or die "Invalid display environment\n";
+        $value =~ s/([\\"])/\\$1/g;
+        print "$key=\"$value\"\n";
+    }
+' > "$session_env"
+mv -- "$session_env" "$XDG_RUNTIME_DIR/uuyc-xembed.env"
+systemctl --user reset-failed xembedsniproxy.service >/dev/null 2>&1 || true
+systemctl --user restart xembedsniproxy.service
+for _ in {1..50}; do
+    "$probe" >/dev/null 2>&1 && exit 0
+    sleep 0.1
+done
+printf 'Tray service did not acquire the XEmbed selection\n' >&2
+exit 1

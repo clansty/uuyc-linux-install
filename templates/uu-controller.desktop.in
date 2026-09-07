@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=UU 远程
+GenericName=远程桌面主控
+Comment=通过 Wine 启动 UU 远程主控端
+Exec=@EXEC@
+Icon=preferences-desktop-remote-desktop
+Terminal=false
+Categories=Network;RemoteAccess;
+StartupNotify=true
+StartupWMClass=gameviewer.exe

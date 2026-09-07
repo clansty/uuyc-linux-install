@@ -1,0 +1,80 @@
+--- a/dlls/d3d11/device.c
++++ b/dlls/d3d11/device.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include "d3d11_private.h"
++#include "dxva.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d11);
+ 
+@@ -7849,22 +7850,63 @@
+ static HRESULT STDMETHODCALLTYPE d3d11_video_device_CheckVideoDecoderFormat(
+         ID3D11VideoDevice1 *iface, const GUID *profile, DXGI_FORMAT format, BOOL *supported)
+ {
+-    FIXME("iface %p, profile %s, format %#x, supported %p, stub!\n", iface, debugstr_guid(profile), format, supported);
+-    return E_NOTIMPL;
++    struct d3d_device *device = impl_from_ID3D11VideoDevice1(iface);
++    GUID available;
++    UINT i, count;
++
++    if (!profile || !supported)
++        return E_INVALIDARG;
++    *supported = FALSE;
++    if (format != DXGI_FORMAT_NV12 || !IsEqualGUID(profile, &DXVA_ModeH264_VLD_NoFGT))
++        return S_OK;
++    count = wined3d_device_get_video_decode_profile_count(device->wined3d_device);
++    for (i = 0; i < count; ++i)
++    {
++        if (SUCCEEDED(wined3d_device_get_video_decode_profile(device->wined3d_device, i, &available))
++                && IsEqualGUID(profile, &available))
++        {
++            *supported = TRUE;
++            break;
++        }
++    }
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d11_video_device_GetVideoDecoderConfigCount(ID3D11VideoDevice1 *iface,
+         const D3D11_VIDEO_DECODER_DESC *desc, UINT *count)
+ {
+-    FIXME("iface %p, desc %p, count %p, stub!\n", iface, desc, count);
+-    return E_NOTIMPL;
++    BOOL supported;
++    HRESULT hr;
++
++    if (!desc || !count || !desc->SampleWidth || !desc->SampleHeight)
++        return E_INVALIDARG;
++    *count = 0;
++    if (FAILED(hr = d3d11_video_device_CheckVideoDecoderFormat(iface, &desc->Guid, desc->OutputFormat, &supported)))
++        return hr;
++    if (supported)
++        *count = 2;
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d11_video_device_GetVideoDecoderConfig(ID3D11VideoDevice1 *iface,
+         const D3D11_VIDEO_DECODER_DESC *desc, UINT index, D3D11_VIDEO_DECODER_CONFIG *config)
+ {
+-    FIXME("iface %p, desc %p, index %u, config %p, stub!\n", iface, desc, index, config);
+-    return E_NOTIMPL;
++    UINT count;
++    HRESULT hr;
++
++    if (!config)
++        return E_INVALIDARG;
++    if (FAILED(hr = d3d11_video_device_GetVideoDecoderConfigCount(iface, desc, &count)))
++        return hr;
++    if (index >= count)
++        return E_INVALIDARG;
++    memset(config, 0, sizeof(*config));
++    config->guidConfigBitstreamEncryption = DXVA_NoEncrypt;
++    config->guidConfigMBcontrolEncryption = DXVA_NoEncrypt;
++    config->guidConfigResidDiffEncryption = DXVA_NoEncrypt;
++    config->ConfigBitstreamRaw = index ? 1 : 2;
++    config->ConfigMinRenderTargetBuffCount = 16;
++    return S_OK;
+ }
+ 
+ static HRESULT STDMETHODCALLTYPE d3d11_video_device_GetContentProtectionCaps(ID3D11VideoDevice1 *iface,

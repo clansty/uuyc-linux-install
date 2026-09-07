@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "kind": "uu-controller-hwdecode",
+  "version": "4.39.2.1561",
+  "experimental": true,
+  "gpu_decode_verified": false,
+  "description": "选择客户端已有的同设备非共享纹理解码路径；实际 GPU 解码及远程高画质尚未验证。",
+  "rationale": "允许已成功创建的 D3D11 解码器继续使用，不再要求 ExtendedResourceSharing，并清除纹理 shared 标志位 2。保留实际解码器创建、能力测试及解码逻辑，不伪造支持结果。",
+  "files": [
+    {
+      "name": "StreamerCodecDetector.exe",
+      "sha256": "ed79229f5b80320542e93f1875a824d9913888c58c3d61b545b0e26ed1e4f454",
+      "patches": [
+        {
+          "id": "allow-existing-decoder-without-extended-resource-sharing",
+          "file_offset": "0x9cd4d",
+          "original": "0f8514040000",
+          "replacement": "e91504000090"
+        },
+        {
+          "id": "clear-texture-shared-flag",
+          "file_offset": "0x9cb43",
+          "original": "48838f3001000002",
+          "replacement": "4883a730010000fd"
+        }
+      ]
+    },
+    {
+      "name": "streamer.dll",
+      "sha256": "ad16f5b95a0e6461312ccd5ea2df63ae4665bf78e1bfb2256d7bde2454c61e8e",
+      "patches": [
+        {
+          "id": "allow-existing-decoder-without-extended-resource-sharing",
+          "file_offset": "0xd1f690",
+          "original": "0f85a7030000",
+          "replacement": "e9a803000090"
+        },
+        {
+          "id": "clear-texture-shared-flag",
+          "file_offset": "0xd1f5ec",
+          "original": "48838e3001000002",
+          "replacement": "4883a630010000fd"
+        }
+      ]
+    }
+  ]
+}

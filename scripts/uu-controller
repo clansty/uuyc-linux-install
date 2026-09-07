@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+prefix="${WINEPREFIX:-$HOME/.local/share/wineprefixes/uu-controller}"
+wine_bin="${WINE_BIN:-/usr/bin/wine}"
+wineserver_bin="${WINESERVER_BIN:-/usr/bin/wineserver}"
+compat_dir="$prefix/compat/controller"
+app_dir="$prefix/drive_c/Program Files/Netease/GameViewer"
+cli_exe="$app_dir/bin/uuyc-cli.exe"
+unit_name="uu-controller-$(printf '%s' "$prefix" | sha256sum | cut -c1-12).service"
+tray_proxy_unit="xembedsniproxy.service"
+
+fail() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send 'UU 远程' "$1"
+    fi
+    printf 'ERROR: %s\n' "$1" >&2
+    exit 1
+}
+
+prefix_process_running() {
+    local needle="$1"
+    local pid
+    local process_prefix
+
+    while read -r pid; do
+        [[ -r "/proc/$pid/environ" ]] || continue
+        process_prefix="$(
+            /usr/bin/tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null |
+                /usr/bin/sed -n 's/^WINEPREFIX=//p' |
+                /usr/bin/head -n 1
+        )"
+        [[ "$process_prefix" == "$prefix" ]] && return 0
+    done < <(/usr/bin/pgrep -u "$UID" -f "$needle" || true)
+
+    return 1
+}
+
+start_controller() {
+    [[ -n "${DISPLAY:-}" ]] || fail '请从图形桌面启动 UU 远程。'
+    [[ -x "$wine_bin" ]] || fail "找不到 Wine：$wine_bin"
+    [[ -x "$compat_dir/winlogon.exe" ]] || fail '缺少 controller winlogon helper。'
+    [[ -f "$compat_dir/uu-service-control.exe" ]] || fail '缺少 UU 服务控制 helper。'
+    [[ -f "$app_dir/GameViewer.exe" ]] || fail 'UU 远程尚未安装到 controller prefix。'
+    [[ -f "$cli_exe" ]] || fail '缺少 UU controller CLI。'
+
+    [[ -x "$compat_dir/xembed-owner" ]] || fail '缺少 XEmbed 托盘检测工具。'
+    local tray_status=0
+    "$compat_dir/xembed-owner" >/dev/null || tray_status=$?
+    if [[ $tray_status == 2 ]]; then
+        fail '无法检查当前 DISPLAY 的系统托盘。'
+    elif [[ $tray_status != 0 ]]; then
+        if [[ -x "$HOME/.local/bin/start-xembed-proxy" ]]; then
+            "$HOME/.local/bin/start-xembed-proxy" || fail '系统托盘初始化失败。'
+        else
+            /usr/bin/systemctl --user cat "$tray_proxy_unit" >/dev/null 2>&1 || \
+                fail '当前显示没有 XEmbed 托盘宿主，请先按安装文档配置系统托盘。'
+            /usr/bin/systemctl --user start "$tray_proxy_unit" || \
+                fail 'XEmbed 托盘桥接器启动失败。'
+            for _ in {1..40}; do
+                "$compat_dir/xembed-owner" >/dev/null && break
+                /usr/bin/sleep 0.05
+            done
+            "$compat_dir/xembed-owner" >/dev/null || \
+                fail 'XEmbed 托盘桥接器未能接管系统托盘。'
+        fi
+    fi
+
+    if /usr/bin/systemctl --user is-active --quiet "$unit_name" &&
+        ! prefix_process_running 'GameViewerServer\.exe'; then
+        stop_controller
+    fi
+
+    if ! /usr/bin/systemctl --user is-active --quiet "$unit_name"; then
+        /usr/bin/systemctl --user reset-failed "$unit_name" \
+            >/dev/null 2>&1 || true
+        /usr/bin/systemd-run --user \
+            --unit="${unit_name%.service}" \
+            --collect \
+            --property=Type=simple \
+            --property=TimeoutStopSec=5s \
+            --setenv="WINEPREFIX=$prefix" \
+            --setenv="DISPLAY=$DISPLAY" \
+            --setenv="XAUTHORITY=${XAUTHORITY:-}" \
+            --setenv=WINEDEBUG=-all \
+            "$compat_dir/winlogon.exe" >/dev/null
+    fi
+
+    for _ in {1..120}; do
+        prefix_process_running 'GameViewerServer\.exe' && break
+        /usr/bin/sleep 0.25
+    done
+    prefix_process_running 'GameViewerServer\.exe' || \
+        fail 'GameViewerServer 未能在 30 秒内启动。'
+
+    cli_version=""
+    for _ in {1..30}; do
+        cli_version="$(
+            /usr/bin/timeout 1 /usr/bin/env \
+                WINEPREFIX="$prefix" DISPLAY="$DISPLAY" WINEDEBUG=-all \
+                WINEDLLOVERRIDES='winedbg.exe=d;mscoree,mshtml=' \
+                "$wine_bin" "$cli_exe" version 2>/dev/null |
+                /usr/bin/tr -d '\r' |
+                /usr/bin/tail -n 1
+        )" || true
+        [[ "$cli_version" =~ ^[0-9]+(\.[0-9]+)+$ ]] && break
+        /usr/bin/sleep 0.25
+    done
+    [[ "$cli_version" =~ ^[0-9]+(\.[0-9]+)+$ ]] || \
+        fail 'UU 本地 IPC 未能在 38 秒内就绪。'
+
+    /usr/bin/env \
+        WINEPREFIX="$prefix" DISPLAY="$DISPLAY" WINEDEBUG=-all \
+        "$wine_bin" "$compat_dir/uu-service-control.exe" \
+        GameViewerService 133
+    /usr/bin/env \
+        WINEPREFIX="$prefix" DISPLAY="$DISPLAY" WINEDEBUG=-all \
+        "$wine_bin" start /unix "$app_dir/GameViewer.exe"
+}
+
+stop_controller() {
+    /usr/bin/env WINEPREFIX="$prefix" "$wineserver_bin" -k \
+        >/dev/null 2>&1 || true
+    /usr/bin/systemctl --user stop "$unit_name" >/dev/null 2>&1 || true
+}
+
+case "${1:-start}" in
+    --help|-h)
+        printf 'usage: uu-controller [start|stop]\nWINEPREFIX selects the dedicated UU prefix.\n'
+        ;;
+    start)
+        start_controller
+        ;;
+    stop)
+        stop_controller
+        ;;
+    *)
+        printf 'usage: uu-controller [start|stop]\n' >&2
+        exit 2
+        ;;
+esac

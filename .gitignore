@@ -1,0 +1,8 @@
+/build/
+/downloads/
+/private/
+*.log
+*.exe
+*.dll
+*.so
+.vscode/
