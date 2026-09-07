@@ -13,6 +13,8 @@ git clone https://github.com/clansty/uuyc-linux-install.git
 cd uuyc-linux-install
 ```
 
+若 HTTPS 克隆报 TLS unexpected EOF，可单次尝试 `git -c http.version=HTTP/1.1 clone https://github.com/clansty/uuyc-linux-install.git`。先检查失败留下的目录，不覆盖已有文件；不要关闭 TLS 校验。
+
 后面的命令均在仓库根目录的 **Bash** 中执行。先完整阅读本文件及 `AGENTS.md`，开始验证前阅读 `AGENTS_QA.md`。若私有仓库访问失败，请用户提供访问权限，不索要或记录其密码、访问令牌。
 
 不同工具调用通常不共享 shell 变量。把实际 prefix、临时工作目录和 app_dir 记录在本次任务状态中；每次开启新 shell 都显式恢复这些变量，不能因为 WINEPREFIX 丢失而误操作默认前缀。

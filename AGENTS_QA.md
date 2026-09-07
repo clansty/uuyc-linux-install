@@ -11,3 +11,4 @@
 - 软件退出后 systemd active 不能证明后台仍在运行；启动器需要同时检查同 prefix 的 GameViewerServer.exe。
 - Desktop Entry 的反斜杠有字段解析和 Exec 参数解析两层，百分号还涉及 field code；用 gio launch 执行隔离测试入口，确认含空格、美元符号、引号、反斜杠、反引号和百分号的 prefix 原样到达子进程，不能只依赖 desktop-file-validate。
 - 图形 target 的顺序不能保证 X11 可连接或 systemd manager 环境新鲜。桥接启动由每次桌面登录触发，先验证连接，再写服务专属 EnvironmentFile；当前已验证宿主检测的存在/不存在/显示错误三种状态，注销重登须用户安排。
+- 发布后 HTTPS 克隆曾出现 TLS unexpected EOF；使用单次 `git -c http.version=HTTP/1.1 clone ...` 后成功，并在克隆副本重新执行工具测试。遇到同类错误可尝试此命令，不关闭 TLS 校验、不改全局 Git 配置。
