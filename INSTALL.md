@@ -1,6 +1,6 @@
 # 安装 UU 远程 Linux 主控：Agent 执行入口
 
-你是执行安装的 agent。目标是在用户的 Linux 图形桌面安装可重复启动、有系统托盘入口、可连接远端设备的 UU 远程主控，并在兼容硬件上启用实验性 H.264 高画质修复。按下列顺序执行，在每阶段完成后验证，失败时按最后的排障规则处理。不要假定你读过任何聊天历史。
+你是执行安装的 agent。目标是在用户的 Linux 图形桌面安装可重复启动、有系统托盘入口、可连接远端设备的 UU 远程主控，默认安装 H.264 高画质兼容补丁，并验证实际连接。按下列顺序执行，在每阶段完成后验证，失败时按最后的排障规则继续处理。不要假定你读过任何聊天历史。
 
 ## 0. 获取仓库
 
@@ -21,7 +21,7 @@ cd uuyc-linux-install
 
 ## 1. 检查环境和权限
 
-验证基线：Linux x86_64、Wine Staging **11.16**、UU **4.39.2.1561**、AMD RX 7800 XT、Mesa RADV、X11 显示后端。原环境为 CachyOS、niri、xwayland-satellite。其他发行版、GPU、Wine 版本属于待验证组合，不能直接套用已成功结论。
+验证基线：Linux x86_64、Wine Staging **11.16**、UU **4.39.2.1561**、AMD RX 7800 XT、Mesa RADV、X11 显示后端。原环境为 CachyOS、niri、xwayland-satellite。这是已有测试记录，不是显卡白名单：其他 GPU 同样执行默认补丁安装和实际验收，不能因为型号不同就跳过。其他环境的效果需要实测，不能直接套用成功结论；Wine/UU 版本仍须满足补丁的接口和文件校验要求。
 
 以正在使用桌面的普通用户执行 Wine。确认：
 
@@ -105,25 +105,74 @@ install -m 755 "$work_dir/helpers/winlogon.exe" \
 
 ## 5. 系统托盘
 
-先运行：
+### 5.1 先检测，只选择一条路线
+
+在当前图形会话运行，显式捕获检测器的退出码：
 
 ```bash
-"$WINEPREFIX/compat/controller/xembed-owner"
+tray_status=0
+"$WINEPREFIX/compat/controller/xembed-owner" || tray_status=$?
+printf 'tray_status=%s\n' "$tray_status"
 ```
 
-退出码 0 表示当前显示已有 XEmbed 托盘宿主：直接进入第 6 节，不安装或启用桥接。退出码 1 表示没有宿主：确认桌面面板是否能启用原生 XEmbed 托盘；仅提供 StatusNotifierItem 的面板使用下面的 KDE `xembedsniproxy` 桥接。退出码 2 表示显示连接出错，先修复 DISPLAY，不能误判为缺少托盘。如果 agent 的命令环境启用了 `set -e`，用 `if` 捕获这些预期退出码。
+| 检测结果 | Agent 的决定 |
+| --- | --- |
+| 0：已有 XEmbed 宿主 | 复用现有托盘，直接进入第 6 节。本节结束，不下载包、不创建桥接或自启动配置。 |
+| 1：没有 XEmbed 宿主 | 确认用户面板已启用 StatusNotifierItem（SNI）托盘，再进入 5.2。 |
+| 2 或其他错误 | 修复显示连接或检测工具后重测，不能据此安装桥接。 |
 
-若已有同名用户服务，检查后复用，不覆盖它。启动器同样查询 X11 selection owner，存在宿主就不会启动桥接；不依赖 GNOME/KDE 等桌面名称猜测。
+若面板连 SNI 托盘也未启用，先配置面板再继续。只在任务记录中写明最终选择的路线，不同时部署多套托盘宿主。检测按当前 X11 selection owner 判断，不按桌面名称猜测。
 
-使用发行版软件包提供的 `xembedsniproxy`，找到其真实可执行文件路径，确认依赖齐全。准备用户全局检测和会话启动工具；若目标文件已有内容，先核对并备份：
+### 5.2 确认需要桥接后，获取单个程序
+
+本节只供 5.1 确认需要桥接的机器执行。目标程序固定为 KDE `xembedsniproxy`。
+
+1. 先检查系统或用户目录中是否已有可用的 `xembedsniproxy`。存在则复用其绝对路径，不下载。
+2. 确实缺少时，通过当前发行版的官方包文件索引定位包含它的软件包，选与本机发行版版本和 CPU 架构匹配的包。可以参考 [Arch 包文件查询](https://wiki.archlinux.org/title/Official_repositories_web_interface) 或 [Ubuntu 包内容查询](https://packages.ubuntu.com/)。包名和二进制在包内的位置以索引为准，不假定所有发行版都相同。
+3. **只下载包到临时目录，不把整个包安装到系统。** 使用官方元数据/签名校验下载，记录来源、版本和哈希；不得运行包内安装脚本。
+4. 列出包内容，精确提取 `xembedsniproxy` 单个文件到临时目录，再复制到 `~/.local/libexec/uuyc/xembedsniproxy`。不把 KDE 的服务、自启动项及其余文件一起复制过去。
+
+提取时根据包格式执行一个命令。先把 `bridge_package` 设为已校验的包路径，`bridge_member` 设为列表中查到的精确成员路径（含可能的 `./` 前缀）：
 
 ```bash
-mkdir -p "$HOME/.local/libexec/uuyc" "$HOME/.local/bin" "$HOME/.config/systemd/user" "$HOME/.config/autostart"
+bridge_stage="$(mktemp -d "${TMPDIR:-/tmp}/uuyc-tray.XXXXXX")"
+# .deb：先用 dpkg-deb --fsys-tarfile "$bridge_package" | tar -tf - 列出文件。
+# libarchive 支持的其他包：先用 bsdtar -tf "$bridge_package" 列出文件。
+case "$bridge_package" in
+  *.deb)
+    dpkg-deb --fsys-tarfile "$bridge_package" |
+      tar -xOf - "$bridge_member" > "$bridge_stage/xembedsniproxy"
+    ;;
+  *)
+    bsdtar -xOf "$bridge_package" "$bridge_member" > "$bridge_stage/xembedsniproxy"
+    ;;
+esac
+file "$bridge_stage/xembedsniproxy"
+ldd "$bridge_stage/xembedsniproxy"
+```
+
+上面的 `ldd` 仅对已验证来源的发行版程序执行。确认架构匹配、没有 `not found` 后，检查目标文件是否已存在；存在则先核对和备份，不能直接覆盖：
+
+```bash
+mkdir -p "$HOME/.local/libexec/uuyc"
+install -m 755 "$bridge_stage/xembedsniproxy" "$HOME/.local/libexec/uuyc/xembedsniproxy"
+```
+
+提取程序不等于它是静态独立程序。若缺少共享库或 Qt xcb 平台插件，先列明缺失的最小运行依赖再处理；不要通过安装整个 Plasma/KDE 包来补齐。不要把其他发行版的库覆盖到系统库目录。复用已有程序时也要检查运行依赖。
+
+### 5.3 固定使用用户服务管理桥接
+
+桥接的管理方式统一为：**图形登录入口 → `start-xembed-proxy` → 用户级 systemd 服务**。不另外直接自启动 `xembedsniproxy`。
+
+先检查现有同名文件和服务；已存在时核对、备份后复用或迁移，不能再建一套并行服务。准备辅助工具：
+
+```bash
+mkdir -p "$HOME/.local/libexec/uuyc" "$HOME/.local/bin" "$HOME/.config/systemd/user"
 install -m 755 "$work_dir/helpers/xembed-owner" "$HOME/.local/libexec/uuyc/"
 install -m 755 scripts/start-xembed-proxy "$HOME/.local/bin/"
 ```
 
-将以下服务的 `/绝对路径/xembedsniproxy` 替换为该路径，保存到 `~/.config/systemd/user/xembedsniproxy.service`：
+创建 `~/.config/systemd/user/xembedsniproxy.service`。下例使用提取到用户目录的程序；5.2 复用已有程序时，只将 ExecStart 替换为它的真实绝对路径：
 
 ```ini
 [Unit]
@@ -133,7 +182,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 EnvironmentFile=%t/uuyc-xembed.env
-ExecStart=/绝对路径/xembedsniproxy
+ExecStart="%h/.local/libexec/uuyc/xembedsniproxy"
 Environment=QT_QPA_PLATFORM=xcb
 Restart=on-failure
 RestartSec=1s
@@ -143,9 +192,19 @@ RestartSec=1s
 systemctl --user daemon-reload
 "$HOME/.local/bin/start-xembed-proxy"
 systemctl --user status xembedsniproxy.service --no-pager
+"$WINEPREFIX/compat/controller/xembed-owner"
 ```
 
-每次登录由桌面会话运行启动工具。创建 `~/.config/autostart/uuyc-xembed.desktop`，把 Exec 换成安装用户的真实绝对路径（路径有空格时遵循 Desktop Entry 引号/转义规则）：
+本阶段要求检测器返回 0、桥接服务没有启动错误。缺少 Qt 插件时检查该服务的 journal，不能仅凭 `ldd` 全部通过就判断可运行。真实 UU 托盘图标在第 6 节启动应用后验证。
+
+### 5.4 选择一个登录触发入口
+
+Agent 先检查当前桌面实际执行哪种登录自启动，**仅配置其中一个入口**：
+
+- 桌面执行 XDG autostart：创建下面的 `~/.config/autostart/uuyc-xembed.desktop`，不再配置合成器启动项。
+- 桌面不执行 XDG autostart：在桌面的原生登录配置里调用 `~/.local/bin/start-xembed-proxy`（如 niri 的 `spawn-at-startup`），不创建上述 autostart 文件。
+
+XDG 入口模板如下，Exec 必须替换为用户的实际绝对路径；有空格时按 Desktop Entry 规则引用，并用 `desktop-file-validate` 检查：
 
 ```ini
 [Desktop Entry]
@@ -155,13 +214,15 @@ Exec=/用户HOME/.local/bin/start-xembed-proxy
 Terminal=false
 ```
 
-用 `desktop-file-validate` 检查自启动文件。桌面不执行 XDG autostart 时，在其原生登录启动配置中执行同一工具；例如 niri 的 `spawn-at-startup`，二者选一。必须从图形会话触发，不能从没有 DISPLAY 的 TTY 或 SSH 执行。
+不要对桥接服务执行 `systemctl --user enable`，也不要再挂到 `default.target` 或 `graphical-session.target` 启动。如果迁移旧的已启用服务，记录原配置后移除旧自动启用关系。
 
-工具在本次会话环境中等待 X11 可连接，存在 XEmbed 宿主时直接返回；否则把本次 DISPLAY/XAUTHORITY 原子写入权限 0600 的用户运行时文件，供专属服务读取，并启动服务。不依赖用户 systemd manager 的历史环境，也不改其全局环境；锁避免登录自启动与 UU 启动器并发启动桥接。不要同时为此服务配置 `WantedBy=default.target` 或 `graphical-session.target` 自动启用。如果迁移旧的已启用服务，先记录原配置并移除其自动启用关系，不必因此中断当前连接。
+登录触发必须来自真实图形会话。工具会等待 X11 可连接，已有宿主则退出；否则将本次 DISPLAY/XAUTHORITY 写入权限 0600 的专属运行时文件，再启动服务。因此无需依赖 systemd manager 留下的环境，也不修改其全局环境。UU 启动器按需调用同一工具，锁会避免并发启动。
 
-`PartOf` 使支持 systemd 图形会话的桌面在注销时停止服务；其他桌面需把 `systemctl --user stop xembedsniproxy.service` 接入其注销钩子。此方案面向每个 Unix 用户一个活动图形会话；同一用户多会话需要按显示隔离服务与环境文件。
+`PartOf` 负责在 systemd 图形会话注销时停止服务；桌面没有这种会话集成时，agent 还需在其注销钩子调用 `systemctl --user stop xembedsniproxy.service`。此方案只覆盖每个 Unix 用户一个活动图形会话。
 
-完成后实际注销重登验收（会中断当前连接，需用户安排）：检查服务读取本次环境、面板显示图标、其他 Wine 程序也能使用托盘。不能以“服务进程存在”或仅添加 After=graphical-session.target 代替该验证。启动器也会在缺少宿主时调用同一工具，因此按需启动仍会刷新本次环境。
+### 5.5 验收后继续安装
+
+记录所选托盘路线、程序来源及唯一登录入口，进入第 6 节启动 UU 后再检查最小化到托盘能否恢复。用户方便中断连接时，再实际注销重登，确认本次显示环境和托盘恢复；未实测就明确记录未验证。
 
 ## 6. 创建启动脚本和桌面入口
 
@@ -178,9 +239,11 @@ desktop-file-validate "${XDG_DATA_HOME:-$HOME/.local/share}/applications/uu-cont
 
 验收：UU 主窗口出现、能登录并列出设备；最小化到托盘后能从系统托盘恢复；在软件菜单退出后再次点击桌面入口可打开。关闭自动更新，以免固定版本补丁被升级覆盖。
 
-## 7. 实验性 H.264 高画质修复
+## 7. 默认安装 H.264 高画质补丁
 
-先完成基础连接，再进行此阶段。当前成功范围是 Wine 11.16 + Vulkan Video + H.264 8-bit NV12。HEVC、HDR、10-bit、4:4:4、其他 GPU 尚未验证。构建前确认 GPU/驱动可暴露 Vulkan 视频解码能力；仅 VA-API 可用不等于 Wine 链路可用。
+先完成基础连接，再执行本阶段；这是默认安装流程，不是仅供某款显卡选择的可选项。为所有满足 Wine/UU 版本要求的安装应用补丁，然后依据真实检测和连接结果判断。不要因显卡不是 RX 7800 XT、其他型号尚未验证，或初步能力枚举失败而直接跳过。
+
+补丁目前针对 Wine 11.16 + Vulkan Video + H.264 8-bit NV12，仍有实验性兼容风险。记录 GPU/驱动和 Vulkan 视频能力用于后续诊断；仅 VA-API 可用不等于 Wine 链路可用。HEVC、HDR、10-bit、4:4:4 不由当前补丁保证支持。
 
 ```bash
 bash scripts/build-wine-d3d11.sh "$work_dir/d3d11"
@@ -214,6 +277,8 @@ done
 
 保存 `backup_dir` 的实际路径到仓库外的安装记录。必须检查当前 UU 进程 `/proc/<PID>/maps` 中加载的 `d3d11.dll` 来自 UU `bin/`，而非 `/usr/lib/wine/`。进程命令行可能变为 `source=...`，结合 prefix 环境和映射确认，不能只按名字猜 PID。
 
+如果应用后不能连接、画质仍受限或出现渲染错误，agent 应继续排障，不以“不是已验证显卡”结束安装：先检查 DLL 加载、驱动和 Vulkan Video，再依据检测器及连接日志定位能力查询、解码创建或画面输出的失败环节。必要时尝试 UU 与远端共同支持的其他编解码格式、其他可用的硬件解码后端或兼容修复；每次更换路径都要实际连接验收。当前 H.264 补丁不能直接当作 HEVC 等格式的实现，也不能仅伪造能力标志绕过检测。保留可恢复的基线；只有确认硬解方案不可用时才向用户说明软件解码兜底的限制。若必须改变固定版本或需要新的授权，说明具体证据并请求用户决定，不跳过哈希校验。
+
 ## 8. 最终验收与交付
 
 让用户选择并授权测试远端设备；不要自行操作设备上的业务数据。
@@ -221,7 +286,7 @@ done
 1. 从生成的桌面入口打开 UU；退出后再打开也成功。
 2. 最小化后从系统托盘恢复；中文和 DPI 可用。
 3. 实际连接，确认视频更新、鼠标键盘输入和需要的音频工作。
-4. 修复高画质时，在真实连接中打开画质菜单，选择高画质并确认图像持续更新。
+4. 默认补丁安装后，在真实连接中打开画质菜单，选择高画质并确认图像持续更新；失败则返回第 7 节继续排障。
 5. 记录实际 UU/Wine/驱动版本、GPU、设置、补丁哈希和验证结果；日志与截图存仓库外。
 
 只有第 4 项完成才能报告画质切换修复。视频查询探针成功或创建 4K decoder 不等于完成真实解码验证。完整硬解结论还需视频引擎活动、真实码流输出和稳定性验证；未做的明确写未验证。

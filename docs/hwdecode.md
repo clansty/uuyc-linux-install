@@ -4,6 +4,8 @@
 
 ## 已确认的边界
 
+补丁默认安装策略见 [INSTALL.md](../INSTALL.md)。以下硬件信息是测试记录，不是安装白名单；其他显卡也执行安装和实际验收，失败时继续调查可用的解码路径。实验标记用于说明验证边界，不是让 agent 自动跳过补丁。
+
 - 测试机器为 RX 7800 XT，Linux VA-API 能枚举硬解能力；这只能证明 Linux 驱动的基础能力，不能证明 UU 的 Windows D3D11 调用链已经打通。
 - Wine 11.16 的 `ID3D11VideoDevice` 能暴露解码 profile，但 `CheckVideoDecoderFormat`、`GetVideoDecoderConfigCount`、`GetVideoDecoderConfig` 原本返回 `E_NOTIMPL`。
 - `patches/wine-11.16-d3d11-video-query.patch` 只补这三个查询。它根据 Wine 实际枚举的 H.264 profile 暴露 NV12 支持，返回实验用的两种 bitstream 配置；没有实现新的解码或纹理共享路径。
