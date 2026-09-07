@@ -7,11 +7,17 @@ use File::Path qw(make_path);
 use Fcntl qw(O_WRONLY O_CREAT O_EXCL);
 
 if (@ARGV == 1 && $ARGV[0] eq '--help') {
-    print "usage: perl scripts/install-launcher.pl PREFIX BIN_DIRECTORY APPLICATIONS_DIRECTORY\n";
+    print "usage: perl scripts/install-launcher.pl PREFIX BIN_DIRECTORY APPLICATIONS_DIRECTORY ICON\n";
     exit 0;
 }
-@ARGV == 3 or die "usage: perl scripts/install-launcher.pl PREFIX BIN_DIRECTORY APPLICATIONS_DIRECTORY\n";
-my ($prefix, $bin, $applications) = @ARGV;
+@ARGV == 4 or die "usage: perl scripts/install-launcher.pl PREFIX BIN_DIRECTORY APPLICATIONS_DIRECTORY ICON\n";
+my ($prefix, $bin, $applications, $icon) = @ARGV;
+length($icon) && $icon !~ /[\r\n\0]/ or die "Missing or invalid icon\n";
+if ($icon =~ m{^/}) {
+    -f $icon or die "Icon file does not exist\n";
+} else {
+    $icon =~ /^[A-Za-z0-9_.-]+$/ or die "Use an icon theme name or an absolute file path\n";
+}
 for ($prefix, $bin, $applications) {
     m{^/} && !/[\r\n\0]/ or die "Use absolute paths without line breaks\n";
 }
@@ -41,6 +47,8 @@ my $script = read_file("$repo/scripts/uu-controller");
 my $entry = read_file("$repo/templates/uu-controller.desktop.in");
 my $exec = '/usr/bin/env ' . exec_quote("WINEPREFIX=$prefix") . ' ' . exec_quote($launcher) . ' start';
 $entry =~ s/\@EXEC\@/$exec/;
+$icon =~ s/\\/\\\\/g;
+$entry =~ s/\@ICON\@/$icon/;
 make_path($bin, $applications);
 for my $item ([$launcher, $script, 0755], [$desktop, $entry, 0644]) {
     my ($path, $content, $mode) = @$item;

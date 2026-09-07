@@ -33,7 +33,7 @@ printf 'DISPLAY=%s\n' "${DISPLAY:-}"
 systemctl --user show-environment
 ```
 
-所需工具：Git、Bash、Perl、curl、coreutils、procps、systemd 用户会话、Wine/对应版本 winegcc、Winetricks、MinGW-w64 C 编译器、GCC、X11 显示及 libX11 开发头文件。推荐 `notify-send`、`desktop-file-validate`、`xprop`。硬解构建还需要 make、flex、bison、patch、tar 和 Wine configure 要求的开发依赖；检查 Vulkan 能力可用 `vulkaninfo`。
+所需工具：Git、Bash、Perl、curl、coreutils、procps、systemd 用户会话、Wine/对应版本 winegcc、Winetricks、MinGW-w64 C 编译器、GCC、X11 显示及 libX11 开发头文件、desktop-file-utils。推荐 `notify-send`、`xprop`。硬解构建还需要 make、flex、bison、patch、tar 和 Wine configure 要求的开发依赖；检查 Vulkan 能力可用 `vulkaninfo`。
 
 按发行版包管理器确认包名后安装缺失依赖，不替换正在被其他程序使用的 Wine。硬解 DLL 按 Wine 11.16 构建；若系统版本不匹配，先解决版本隔离，不把它装进其他版本的 Wine。
 
@@ -226,16 +226,39 @@ Terminal=false
 
 ## 6. 创建启动脚本和桌面入口
 
-下面的工具实际安装启动脚本，并生成包含当前用户绝对路径及目标 prefix 的 `.desktop`，不会覆盖已有同名文件：
+### 6.1 从 Wine 入口取得 UU 图标
+
+在用户的 applications 目录内定位 Wine 自动生成的 UU `.desktop`（常见相对路径为 `wine/Programs/UU远程.desktop`）。只搜索这个目录，设置合理超时，不搜索整个 HOME。读取 `[Desktop Entry]` 下的 `Exec`、`Path`、`Icon`，确认入口属于目标 WINEPREFIX 和 UU，不能仅凭显示名称判断。
+
+将确认过的文件绝对路径记为 `wine_desktop`，将它的 `Icon` 值记为 `uu_icon`。Wine 通常已把图标放入用户图标主题目录，可以直接复用这个名称；例如本次安装为 `024B_GameViewer.0`，但其他安装必须读取实际值，不能写死。确认主题目录内确有对应图标文件。若原入口或图标缺失，从该版本 UU 的 exe/ico 资源中提取 PNG，保存在用户图标目录，再把 `uu_icon` 设为该 PNG 的绝对路径。不要使用无关的通用远程桌面图标代替。
+
+### 6.2 创建带图标的主控入口
+
+下面的工具实际安装启动脚本，并生成包含当前用户绝对路径、目标 prefix 和指定图标的 `.desktop`，不会覆盖已有同名文件。第四个参数必填，可以是已安装的图标主题名称或现存图片的绝对路径：
 
 ```bash
 perl scripts/install-launcher.pl "$WINEPREFIX" \
-    "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications" "$uu_icon"
 desktop-file-validate "${XDG_DATA_HOME:-$HOME/.local/share}/applications/uu-controller.desktop"
 "$HOME/.local/bin/uu-controller" start
 ```
 
 已有入口时先检查和备份再更新，不能直接删除。桌面图标调用该启动脚本，不直接调用 UU 的 exe。命令行使用自定义 prefix 时继续显式设置 `WINEPREFIX`；桌面入口已固定安装时的 prefix。
+
+### 6.3 隐藏 Wine 自动入口
+
+新入口能够启动且正确显示 UU 图标后，再隐藏 6.1 确认过的 Wine 原入口，保留原文件和它引用的图标。先创建仓库外的备份，再用 `desktop-file-edit` 修改标准 Desktop Entry 字段：
+
+```bash
+desktop_backup_dir="$(mktemp -d "$WINEPREFIX/compat/controller/desktop-backup.XXXXXX")"
+cp -p -- "$wine_desktop" "$desktop_backup_dir/original.desktop"
+desktop-file-edit --set-key=NoDisplay --set-value=true "$wine_desktop"
+desktop-file-validate "$wine_desktop"
+```
+
+仅处理已确认属于目标 prefix 的 UU 原入口，不批量隐藏其他 Wine 程序，不关闭全局菜单生成。如果没有原入口则跳过隐藏；有多个 UU 原入口时逐个核实并分别备份处理。后续 Wine 或 UU 更新可能重新生成入口，需复查。恢复时将对应备份复制回原路径即可。
+
+安装所需的 `desktop-file-edit` 和 `desktop-file-validate` 由发行版的 desktop-file-utils 提供。检查应用菜单只保留新的 UU 主控入口，且图标显示正确；必要时刷新桌面菜单缓存，不能为此中断用户会话。
 
 验收：UU 主窗口出现、能登录并列出设备；最小化到托盘后能从系统托盘恢复；在软件菜单退出后再次点击桌面入口可打开。关闭自动更新，以免固定版本补丁被升级覆盖。
 
